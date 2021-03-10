@@ -164,6 +164,14 @@ struct trace_context {
     unsigned int pts; /* IVF header information */
 
     pid_t created_thd_id;
+
+    FILE *ivf_file;
+    uint32_t ivf_fourcc;
+    uint32_t ivf_frame_rate;
+    uint32_t ivf_frame_number;
+    int num_render_targets;
+    int ivf_frame_byte_size;
+    long int ivfFrameHeaderPos;
 };
 
 struct trace_config_info {
@@ -1056,6 +1064,171 @@ static void va_TraceSurface(VADisplay dpy, VAContextID context)
     va_TraceMsg(trace_ctx, NULL);
 }
 
+#pragma pack(1)
+typedef struct IvfHeader {
+    uint32_t  signature;
+    uint16_t  version;
+    uint16_t  length;
+    uint32_t  fourcc;
+    uint16_t  width;
+    uint16_t  height;
+    uint32_t  framerate;
+    uint32_t  timescale;
+    uint32_t  frameNumber;
+    uint32_t  num_render_targets; // uint32_t  unused;
+} IvfHeader;
+
+typedef struct IvfFrameHeader {
+    uint32_t  size; //  (not including the 12-byte header (size , timestamp))
+    int64_t  timestamp;
+} IvfFrameHeader;
+
+typedef struct IvfVAFrameHeader {
+    uint32_t rendertarget;
+    uint32_t bufferlen;
+} IvfVAFrameHeader;
+
+typedef struct IvfVABufferHeader {
+    uint32_t/*VABufferType*/ va_buffer_type;
+    int32_t va_buffer_size;
+} IvfVABufferHeader;
+#pragma pack()
+static void va_CNMIvfFormatInit(struct trace_context *trace_ctx, int num_render_targets)
+{
+    char env_value[1024];
+    char *value;
+
+    va_TraceMsg(trace_ctx, "+%s\n");
+    value = getenv("LIBVA_VA_BITSTREAM");
+    if (value) {
+        strncpy(env_value, value, 1024);
+        env_value[1023] = '\0';
+        trace_ctx->ivf_file = fopen(env_value, "wb");
+    }
+    else {
+        trace_ctx->ivf_file = fopen("output.ivf", "wb");
+    }
+    va_TraceMsg(trace_ctx, "%s env_value=%s\n", env_value);
+    if (trace_ctx->ivf_file) {
+        IvfHeader ivfHeader;
+        memset(&ivfHeader, 0x00, sizeof(IvfHeader)); // the correct value will be updated at the end
+        fwrite(&ivfHeader, sizeof(IvfHeader), 1, trace_ctx->ivf_file);
+        fflush(trace_ctx->ivf_file);
+    }
+
+    trace_ctx->num_render_targets = num_render_targets;
+
+    va_TraceMsg(trace_ctx, "-%s\n");
+    va_TraceMsg(trace_ctx, NULL);
+}
+static void va_CNMIvfFormatBeginPicture(struct trace_context *trace_ctx)
+{
+    va_TraceMsg(trace_ctx, "+%s\n");
+    trace_ctx->ivf_frame_byte_size = 0;
+    if (trace_ctx->ivf_file) {
+        IvfFrameHeader ivfFrameHeader;
+        memset(&ivfFrameHeader, 0x00, sizeof(IvfFrameHeader));
+        ivfFrameHeader.timestamp = 0; 
+        ivfFrameHeader.size = 0;  // will be updated at EndPicture
+        trace_ctx->ivfFrameHeaderPos = ftell(trace_ctx->ivf_file);
+        fwrite(&ivfFrameHeader, sizeof(IvfFrameHeader), 1, trace_ctx->ivf_file);
+        fflush(trace_ctx->ivf_file);
+    }
+    va_TraceMsg(trace_ctx, "-%s\n");
+    va_TraceMsg(trace_ctx, NULL);
+}
+static void va_CNMIvfFormatEndPicture(struct trace_context *trace_ctx)
+{
+    va_TraceMsg(trace_ctx, "+%s\n");
+    if (trace_ctx->ivf_file) 
+    {
+        IvfFrameHeader ivfFrameHeader;
+        memset(&ivfFrameHeader, 0x00, sizeof(IvfFrameHeader));
+        ivfFrameHeader.timestamp = 0; 
+        ivfFrameHeader.size = trace_ctx->ivf_frame_byte_size; 
+        fseek(trace_ctx->ivf_file, trace_ctx->ivfFrameHeaderPos, SEEK_SET);
+        fwrite(&ivfFrameHeader, sizeof(IvfFrameHeader), 1, trace_ctx->ivf_file);
+        fseek(trace_ctx->ivf_file, 0, SEEK_END);
+        fflush(trace_ctx->ivf_file);
+    }
+    va_TraceMsg(trace_ctx, "-%s\n");
+    va_TraceMsg(trace_ctx, NULL);
+} 
+
+static void va_CNMIvfFormatRenderPictureLoopEnter(struct trace_context *trace_ctx, int num_buffers)
+{
+    va_TraceMsg(trace_ctx, "+%s\n");
+    if (trace_ctx->ivf_file) 
+    {
+        IvfVAFrameHeader ivfVAFrameHeader;
+        ivfVAFrameHeader.rendertarget = trace_ctx->num_render_targets;
+        ivfVAFrameHeader.bufferlen = num_buffers; 
+        fwrite(&ivfVAFrameHeader, sizeof(IvfVAFrameHeader), 1, trace_ctx->ivf_file);
+        fflush(trace_ctx->ivf_file);
+        trace_ctx->ivf_frame_byte_size += sizeof(IvfVAFrameHeader);
+    }
+    va_TraceMsg(trace_ctx, "-%s\n");
+    va_TraceMsg(trace_ctx, NULL);
+}
+static void va_CNMIvfFormatRenderBuffer(struct trace_context *trace_ctx, VABufferType type, void *data, unsigned int size, unsigned int num_elements)
+{
+    va_TraceMsg(trace_ctx, "+%s\n");
+    if (num_elements > 0) {
+        return; // not support for video codec??
+    }
+    if (trace_ctx->ivf_file) {
+        IvfVABufferHeader ivfVABufferHeader;
+        ivfVABufferHeader.va_buffer_type = (uint32_t)type;
+        ivfVABufferHeader.va_buffer_size = size;
+        fwrite(&ivfVABufferHeader, sizeof(IvfVABufferHeader), 1, trace_ctx->ivf_file);
+        trace_ctx->ivf_frame_byte_size += sizeof(IvfVABufferHeader);
+        fwrite(data, 1, size, trace_ctx->ivf_file);
+        trace_ctx->ivf_frame_byte_size += size; 
+        fflush(trace_ctx->ivf_file);
+    }
+    va_TraceMsg(trace_ctx, "-%s\n");
+    va_TraceMsg(trace_ctx, NULL);
+}
+static void va_CNMIvfFormatRenderPictureLoopLeave(struct trace_context *trace_ctx)
+{
+    va_TraceMsg(trace_ctx, "+%s\n");
+    if (trace_ctx->ivf_file) {
+
+    }
+    va_TraceMsg(trace_ctx, "-%s\n");
+    va_TraceMsg(trace_ctx, NULL);
+}
+static void va_CNMIvfFormatEnd(struct trace_context *trace_ctx)
+{
+    va_TraceMsg(trace_ctx, "+%s\n");
+    
+    if (trace_ctx->ivf_file) {
+        fseek(trace_ctx->ivf_file, 0, SEEK_SET);
+        {
+            IvfHeader ivfHeader;
+            memset(&ivfHeader, 0x00, sizeof(IvfHeader));
+            // ivfHeader.signature = 0x444b4946; // DKIF
+            ivfHeader.signature = 0x56414946; // VAIF
+            ivfHeader.fourcc = trace_ctx->trace_profile;
+            ivfHeader.length = 32;
+            ivfHeader.width = trace_ctx->trace_frame_width;
+            ivfHeader.height = trace_ctx->trace_frame_height;
+            ivfHeader.timescale = 1;
+            ivfHeader.framerate = trace_ctx->ivf_frame_rate;
+            ivfHeader.frameNumber = trace_ctx->trace_frame_no;
+            ivfHeader.version = 0;
+            ivfHeader.num_render_targets = trace_ctx->num_render_targets; 
+            fwrite(&ivfHeader, sizeof(IvfHeader), 1, trace_ctx->ivf_file);
+        }
+        fseek(trace_ctx->ivf_file, 0, SEEK_END);
+        fclose(trace_ctx->ivf_file);
+        trace_ctx->ivf_file = NULL;
+    }
+
+    va_TraceMsg(trace_ctx, "-%s\n");
+    va_TraceMsg(trace_ctx, NULL);
+}
+
 
 void va_TraceInitialize (
     VADisplay dpy,
@@ -1429,6 +1602,7 @@ void va_TraceCreateContext(
 
     internal_TraceUpdateContext(pva_trace, tra_ctx_id, trace_ctx, *context, 0);
 
+    va_CNMIvfFormatInit(trace_ctx, num_render_targets);
     UNLOCK_CONTEXT(pva_trace);
     return;
 
@@ -1467,6 +1641,8 @@ void va_TraceDestroyContext (
             internal_TraceUpdateContext(pva_trace,
                 get_valid_ctx_idx(pva_trace, context),
                 NULL, context, 0);
+
+            va_CNMIvfFormatEnd(trace_ctx);
         }
     }
 
@@ -4506,6 +4682,8 @@ void va_TraceBeginPicture(
 
     trace_ctx->trace_frame_no++;
     trace_ctx->trace_slice_no = 0;
+
+    va_CNMIvfFormatBeginPicture(trace_ctx);
 }
 
 static void va_TraceMPEG2Buf(
@@ -5438,6 +5616,7 @@ void va_TraceRenderPicture(
     if (buffers == NULL)
         return;
     
+    va_CNMIvfFormatRenderPictureLoopEnter(trace_ctx, num_buffers);
     for (i = 0; i < num_buffers; i++) {
         unsigned char *pbuf = NULL;
         unsigned int j;
@@ -5560,9 +5739,13 @@ void va_TraceRenderPicture(
             break;
         }
 
+        for (j=0; j<num_elements; j++) {
+            va_CNMIvfFormatRenderBuffer(trace_ctx, type, pbuf + size*j, size, j);
+        }
         vaUnmapBuffer(dpy, buffers[i]);
     }
 
+    va_CNMIvfFormatRenderPictureLoopLeave(trace_ctx);
     va_TraceMsg(trace_ctx, NULL);
 }
 
@@ -5579,6 +5762,8 @@ void va_TraceEndPicture(
     va_TraceMsg(trace_ctx, "\tcontext = 0x%08x\n", context);
     va_TraceMsg(trace_ctx, "\trender_targets = 0x%08x\n", trace_ctx->trace_rendertarget);
     va_TraceMsg(trace_ctx, NULL);
+
+    va_CNMIvfFormatEndPicture(trace_ctx);
 }
 
 void va_TraceEndPictureExt(
@@ -5604,6 +5789,8 @@ void va_TraceEndPictureExt(
         vaSyncSurface(dpy, trace_ctx->trace_rendertarget);
         va_TraceSurface(dpy, context);
     }
+
+    va_CNMIvfFormatEndPicture(trace_ctx);
  }
 
 
