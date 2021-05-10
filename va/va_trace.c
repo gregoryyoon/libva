@@ -1137,7 +1137,7 @@ static uint32_t vaProfileToFourcc(VAProfile profile)
     }
     return fourcc;
 }
-#pragma pack(1)
+// #pragma pack(1)
 typedef struct IvfHeader {
     uint32_t  signature;
     uint16_t  version;
@@ -1167,7 +1167,7 @@ typedef struct IvfVABufferHeader {
     uint32_t/*VABufferType*/ va_buffer_type;
     int32_t va_buffer_size;
 } IvfVABufferHeader;
-#pragma pack()
+// #pragma pack()
 static void va_CNMIvfFormatCreate(struct trace_context *trace_ctx, int num_render_targets)
 {
     char env_value[1024];
