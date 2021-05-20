@@ -175,6 +175,7 @@ struct trace_context {
     int ivf_frame_byte_size;
     long int ivfFrameHeaderPos;
     int trace_num_buffers;
+    VASurfaceID ivf_render_targets[128];
 #endif
 };
 
@@ -1168,10 +1169,11 @@ typedef struct IvfVABufferHeader {
     int32_t va_buffer_size;
 } IvfVABufferHeader;
 // #pragma pack()
-static void va_CNMIvfFormatCreate(struct trace_context *trace_ctx, int num_render_targets)
+static void va_CNMIvfFormatCreate(struct trace_context *trace_ctx, VASurfaceID *render_targets, int num_render_targets)
 {
     char env_value[1024];
     char *value;
+    int i;
 #ifdef USE_CNM_TRACE_DEBUG
     printf("+%s trace_ctx=%p\n", __FUNCTION__, trace_ctx);
 #endif
@@ -1197,11 +1199,36 @@ static void va_CNMIvfFormatCreate(struct trace_context *trace_ctx, int num_rende
     }
 
     trace_ctx->num_render_targets = num_render_targets;
+    memset(trace_ctx->ivf_render_targets, 0x00, sizeof(trace_ctx->ivf_render_targets));
+    for (i=0; i <trace_ctx->num_render_targets; i++) {
+        trace_ctx->ivf_render_targets[i] = render_targets[i];
+    }
     trace_ctx->ivf_frame_rate = 0;
 
 #ifdef USE_CNM_TRACE_DEBUG
     printf("-%s \n", __FUNCTION__);
 #endif
+}
+static uint32_t VASurfaceIDIndex(struct trace_context *trace_ctx, VASurfaceID render_target)
+{
+    int i;
+    uint32_t index = (uint32_t)-1;
+#ifdef USE_CNM_TRACE_DEBUG
+    printf("+%s render_target=0x08%x\n", __FUNCTION__, render_target);
+#endif
+    for (i=0; i <trace_ctx->num_render_targets; i++) {
+#ifdef USE_CNM_TRACE_DEBUG
+   printf("+%s ivf_render_target[%d]=0x%08x, render_target=0x08%x\n", __FUNCTION__, i, trace_ctx->ivf_render_targets[i], render_target);
+#endif
+        if (trace_ctx->ivf_render_targets[i] == render_target) {
+            index = (uint32_t)i;
+        }
+    }
+
+#ifdef USE_CNM_TRACE_DEBUG
+    printf("-%s index=%d\n", __FUNCTION__, index);
+#endif
+    return index;
 }
 static void va_CNMIvfFormatBeginPicture(struct trace_context *trace_ctx)
 {
@@ -1224,7 +1251,7 @@ static void va_CNMIvfFormatBeginPicture(struct trace_context *trace_ctx)
 
         IvfVAFrameHeader ivfVAFrameHeader;
         ivfVAFrameHeader.signature = MKTAG('V','A','F','H');
-        ivfVAFrameHeader.rendertarget = trace_ctx->trace_rendertarget;
+        ivfVAFrameHeader.rendertarget = VASurfaceIDIndex(trace_ctx, trace_ctx->trace_rendertarget);
         ivfVAFrameHeader.bufferlen = 0; // will be updated at EndPicture
         fwrite(&ivfVAFrameHeader, sizeof(IvfVAFrameHeader), 1, trace_ctx->ivf_file);
         trace_ctx->ivf_frame_byte_size += sizeof(IvfVAFrameHeader);
@@ -1708,7 +1735,7 @@ void va_TraceCreateContext(
     internal_TraceUpdateContext(pva_trace, tra_ctx_id, trace_ctx, *context, 0);
 
 #ifdef USE_CNM_TRACE
-    va_CNMIvfFormatCreate(trace_ctx, num_render_targets);
+    va_CNMIvfFormatCreate(trace_ctx, render_targets, num_render_targets);
 #endif
     UNLOCK_CONTEXT(pva_trace);
     return;
